@@ -1,0 +1,17 @@
+torch
+torchvision
+datasets
+numpy
+pandas
+peft
+pillow
+qwen-vl-utils
+huggingface-hub
+einops
+flash-attn
+math_verify
+opencv-python
+tensorboard
+transformers
+trl==0.15.2
+accelerate==1.6.0
