@@ -140,6 +140,7 @@ class dataset_eval(Dataset):
         image_folder: str,
         points_per_image=None,
         normalized_focal_length=1000.0,  # set to the intrinsics after original resize if needed
+        randomize=True,  # randomly use pixels from each image
     ) -> None:
         super(dataset_eval, self).__init__()
         self.normalized_focal_length = normalized_focal_length
@@ -168,10 +169,17 @@ class dataset_eval(Dataset):
 
         self.random_indices = []
 
-        random.seed(42)  # Set a fixed seed for replicability
-        while len(self.random_indices) < self.__len__():
-            i = random.sample(range(len(self.list_data_dict[0]["pixel_coords"])), 1)
-            self.random_indices.append((i))
+        if randomize:
+            random.seed(42)  # Set a fixed seed for replicability
+            while len(self.random_indices) < self.__len__():
+                i = random.sample(range(len(self.list_data_dict[0]["pixel_coords"])), 1)
+                self.random_indices.append((i))
+        else:
+            while len(self.random_indices) < self.__len__():
+                for i in range(len(self.list_data_dict[0]["pixel_coords"])):
+                    self.random_indices.append(([i]))
+                    if len(self.random_indices) >= self.__len__():
+                        break
 
     def _get_length(self) -> int:
         return len(self.list_data_dict)
@@ -182,14 +190,11 @@ class dataset_eval(Dataset):
     def extract_image_and_meta(self, index):
         index_ori = index
 
-        index %= len(self.list_data_dict)
-        random_index = self.random_indices[index_ori][0]
+        index //= len(self.list_data_dict[0]["pixel_coords"])  # Image index
+        random_index = self.random_indices[index_ori][0]  # Pixel index inside image
 
         # read image
         data_dict = {}
-
-        # breakpoint()
-
         data_dict["image"] = Image.open(
             os.path.join(
                 self.image_folder, self.list_data_dict[index]["image"].lstrip("/")

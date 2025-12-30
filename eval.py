@@ -5,35 +5,17 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-import base64
-import copy
-
-import io
-import json, os
-import re
-
-import numpy as np
 
 import torch
-
-from PIL import Image
-
 from tqdm import tqdm
 from transformers import (
-    AutoModelForCausalLM,
     AutoProcessor,
-    AutoTokenizer,
-    BatchFeature,
     LlavaForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
-    Qwen2VLForConditionalGeneration,
 )
-
-
-from typing import Union
-
 from utils.datasets import dataset_eval
 from utils.metrics import *
+
 
 def convert_example_pixtral(example, image_before_text=None):
     messages = []
@@ -179,7 +161,10 @@ def main(args):
         )
 
     dataset = dataset_eval(
-        json_path, img_fodler, normalized_focal_length = 750.0 # change to the corresponding value for other models
+        json_path,
+        img_fodler,
+        normalized_focal_length=750.0,  # change to the corresponding value for other models
+        randomize=not args.eval_no_random,
     )
 
     print(f"dataset size = {len(dataset)}")
@@ -190,11 +175,9 @@ def main(args):
     all_outputs = []  # List to store all answers
     all_solutions = []  # List to store all solutions
 
-    samples_to_eval = (
-        min(args.samples_to_eval, len(dataset)) // args.bsz
-    ) * args.bsz
+    samples_to_eval = (min(args.samples_to_eval, len(dataset)) // args.bsz) * args.bsz
     step = 1
-    sampled_indices = list(range(0, len(dataset), step))[: samples_to_eval]
+    sampled_indices = list(range(0, len(dataset), step))[:samples_to_eval]
 
     with torch.no_grad():
 
@@ -242,18 +225,14 @@ def main(args):
                 if args.apply_system_prompt:
                     text = [
                         processor.apply_chat_template(
-                            convert_example(msg, True)[
-                                "messages"
-                            ],
+                            convert_example(msg, True)["messages"],
                             tokenize=False,
                             add_generation_prompt=True,
                         )
                         for msg in batch_messages
                     ]
                 else:
-                    batch_messages_text = [
-                        dataset[j]["prompt"] for j in batch_indices
-                    ]
+                    batch_messages_text = [dataset[j]["prompt"] for j in batch_indices]
                     text = [
                         processor.apply_chat_template(
                             msg, tokenize=False, add_generation_prompt=True
@@ -264,8 +243,7 @@ def main(args):
                     # image_inputs, video_inputs = process_vision_info(batch_messages)
                 # breakpoint()
                 image_inputs = [
-                    x["images"] if "images" in x else x["image"]
-                    for x in batch_messages
+                    x["images"] if "images" in x else x["image"] for x in batch_messages
                 ]
                 # print("image_inputs", image_inputs)
                 if i == 0:
@@ -331,18 +309,23 @@ def main(args):
     for i in range(len(metric_funcs)):
         print("final delta_1 = ", sum(metrics[i]) / len(metrics[i]))
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="DepthLM parameters."
-    )
+    parser = argparse.ArgumentParser(description="DepthLM parameters.")
     parser.add_argument(
         "--model_path", type=str, required=True, help="Path to the model."
     )
     parser.add_argument(
-        "--image_folder", type=str, default = "./examples/ibims1/", help="folder that contains the image"
+        "--image_folder",
+        type=str,
+        default="./examples/ibims1/",
+        help="folder that contains the image",
     )
     parser.add_argument(
-        "--json_path", type=str, default = "./examples/ibims1/ibims1_val.jsonl", help="path to the meta data"
+        "--json_path",
+        type=str,
+        default="./examples/ibims1/ibims1_val.jsonl",
+        help="path to the meta data",
     )
     parser.add_argument(
         "--max_new_tokens",
@@ -350,14 +333,22 @@ if __name__ == "__main__":
         default=4096,
         help="maximum number of tokens to generate",
     )
+    parser.add_argument("--bsz", type=int, default=1, help="Batch size for processing.")
     parser.add_argument(
-        "--bsz", type=int, default=1, help="Batch size for processing."
+        "--apply_system_prompt",
+        action="store_true",
+        help="For Qwen only, whether to apply system prompt or not.",
     )
     parser.add_argument(
         "--samples_to_eval",
         type=int,
         default=128,
         help="maximum number of samples to evaluate",
+    )
+    parser.add_argument(
+        "--eval_no_random",
+        action="store_true",
+        help="If true, turn off randomness in evaluation.",
     )
     args = parser.parse_args()
 
