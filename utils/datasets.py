@@ -6,14 +6,19 @@
 
 import bisect
 import json
+import logging
 import os
 import random
+from typing import Any
 
 import cv2
 import numpy as np
 
 from PIL import Image
 from torch.utils.data import Dataset
+
+logger: logging.Logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 # unified prompt that can be used for both SFT and GRPO, our method is not sensitive to the prompt, so you can adjust it flexibly
@@ -659,3 +664,182 @@ class dataset_train(Dataset):
             return self.getitem_Taskonomy(index, id_dataset)
         else:
             return self.getitem_noTaskonomy(index, id_dataset)
+
+
+class dataset_inference(Dataset):
+    """Dataset for deterministic inference. Each image and pixel is processed for exactly once."""
+
+    def __init__(
+        self,
+        data_path: str,
+        image_folder: str,
+        normalized_focal_length=750.0,  # set to the intrinsics after original resize if needed
+    ) -> None:
+        super(dataset_inference, self).__init__()
+        self.normalized_focal_length = normalized_focal_length
+
+        logger.info(f"reading data from {data_path=}, {image_folder=}")
+        if ".jsonl" in data_path:
+            import pandas as pd
+
+            self.list_data_dict = pd.read_json(data_path, lines=True).to_dict(
+                orient="records"
+            )
+        else:
+            self.list_data_dict = json.load(open(data_path, "r"))
+
+        # Number of points per image, e.g., [1, 2, 3, 4, 5]
+        self.num_pixels: list[int] = [
+            len(data_dict["pixel_coords"]) for data_dict in self.list_data_dict
+        ]
+        # Cumulative sum of number of points, e.g., [1, 3, 6, 10, 15]
+        self.num_pixels_cumsum = np.cumsum(self.num_pixels)
+        logger.info(
+            f"{dataset_inference.__name__} has {len(self.num_pixels_cumsum)}"
+            f" images, {self.num_pixels_cumsum[-1]} pixels"
+        )
+
+        self.data_path = data_path
+        self.image_folder = image_folder
+
+        if "scannet" in data_path:
+            self.list_data_dict = self.list_data_dict[
+                int(len(self.list_data_dict) * 0.98) :
+            ]  # keep the last 2% for evaluation
+
+            random.seed(42)
+            random.shuffle(self.list_data_dict)
+
+    def __len__(self) -> int:
+        """
+        Each image-pixel pair is a sample, so the dataset length equals
+        total number of pixels.
+        """
+        return self.num_pixels_cumsum[-1]
+
+    def extract_image_and_meta(self, index: int) -> dict[str, Any]:
+        """
+        Index mapping example:
+        self.num_pixels =        [1, 2, 3, 4, 5]
+        self.num_pixels_cumsum = [1, 3, 6, 10, 15]
+        index = 0 -> index + 1 = 1 -> image_index = 0, pixel_index = 1
+        index = 1 -> index + 1 = 2 -> image_index = 1, pixel_index = 0
+        index = 2 -> index + 1 = 3 -> image_index = 1, pixel_index = 1
+        index = 3 -> index + 1 = 4 -> image_index = 2, pixel_index = 0
+        """
+        image_index: int = bisect.bisect_left(self.num_pixels_cumsum, index + 1)
+        pixel_index: int = (
+            index - int(self.num_pixels_cumsum[image_index - 1])
+            if image_index > 0
+            else index
+        )
+        logger.debug(f"Loading sample {index=}: {image_index=}, {pixel_index=}")
+        assert pixel_index >= 0 and pixel_index < self.num_pixels[image_index]
+
+        data_dict: dict[str, Any] = {}
+
+        # Step 1: Load image
+        data_dict["image"] = Image.open(
+            os.path.join(
+                self.image_folder, self.list_data_dict[image_index]["image"].lstrip("/")
+            )
+        )
+
+        # Step 2: Load intrinsics and rescale image and intrinsics to target focal length
+        intrinsics = self.list_data_dict[image_index]["intrinsics"][:4]
+        if intrinsics[0] == 0.0:  # handle intrinsic errors
+            intrinsics[0] = intrinsics[1]
+        if intrinsics[1] == 0.0:
+            intrinsics[1] = intrinsics[0]
+
+        data_dict["image"], intrinsics_new = undistort_image(
+            intrinsics, data_dict["image"]
+        )
+
+        data_dict["image"], intrinsics_new = normalizing_focal_length(
+            self.normalized_focal_length, intrinsics_new, data_dict["image"]
+        )
+
+        # Step 3: Load pixel coordinates and rescale it
+        pixel_coord = self.list_data_dict[image_index]["pixel_coords"][pixel_index]
+        scaled_pixel_x = int(
+            (pixel_coord[0] - intrinsics[2]) * (intrinsics_new[0] / intrinsics[0])
+            + intrinsics_new[2]
+        )
+        scaled_pixel_y = int(
+            (pixel_coord[1] - intrinsics[3]) * (intrinsics_new[1] / intrinsics[1])
+            + intrinsics_new[3]
+        )
+        pixel_coord: tuple[int, int] = (scaled_pixel_x, scaled_pixel_y)
+
+        # Step 4: Load depth
+        depth: float = self.list_data_dict[image_index]["depth"][pixel_index]
+
+        # Step 5: Draw marker on the image
+        cross_size = 5  # Adjustable cross size
+
+        # Check if the adjustable cross can be drawn
+        if (
+            cross_size <= scaled_pixel_x < data_dict["image"].width - cross_size
+            and cross_size <= scaled_pixel_y < data_dict["image"].height - cross_size
+        ):
+            # Draw a --> like arrow
+            for dx in range(1, cross_size + 1):
+                data_dict["image"].putpixel(
+                    (scaled_pixel_x - dx, scaled_pixel_y), (255, 0, 0)
+                )  # Horizontal line
+            # Draw the arrowhead
+            for dy in range(1, cross_size // 2 + 1):
+                data_dict["image"].putpixel(
+                    (
+                        scaled_pixel_x - dy - 1,
+                        scaled_pixel_y + dy,
+                    ),
+                    (255, 0, 0),
+                )
+                data_dict["image"].putpixel(
+                    (
+                        scaled_pixel_x - dy - 1,
+                        scaled_pixel_y - dy,
+                    ),
+                    (255, 0, 0),
+                )
+        else:
+            logger.error(
+                f"Marker cannot be drawn because pixel is too close to the boarder. Skipped."
+            )
+            return None
+
+        data_dict["pixel_coord"] = pixel_coord
+        data_dict["intrinsics"] = intrinsics_new
+        data_dict["depth"] = depth
+        return data_dict
+
+    def __getitem__(self, index) -> dict[str, Any]:
+        if index < 0 or index >= self.__len__():
+            raise ValueError(
+                f"Index out of range: {index}. Dataset size = {self.__len__()}"
+            )
+
+        data_dict: dict[str, Any] = self.extract_image_and_meta(index)
+
+        # generate prompt
+        data_dict["problem"], data_dict["thinking"], data_dict["solution"] = (
+            generate_prompt_depth_sft(
+                data_dict["depth"],
+                is_eval=True,
+            )
+        )
+
+        data_dict["system"] = "You are a helpful assistant."
+
+        data_dict["prompt"] = [
+            {
+                "content": [
+                    {"image": data_dict["image"], "type": "image"},
+                    {"text": data_dict["problem"], "type": "text"},
+                ],
+                "role": "user",
+            }
+        ]
+        return data_dict
