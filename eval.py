@@ -5,35 +5,18 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-import base64
-import copy
-
-import io
-import json, os
-import re
-
-import numpy as np
+import logging
 
 import torch
-
-from PIL import Image
-
 from tqdm import tqdm
 from transformers import (
-    AutoModelForCausalLM,
     AutoProcessor,
-    AutoTokenizer,
-    BatchFeature,
     LlavaForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
-    Qwen2VLForConditionalGeneration,
 )
-
-
-from typing import Union
-
-from utils.datasets import dataset_eval
+from utils.datasets import dataset_eval, dataset_inference
 from utils.metrics import *
+
 
 def convert_example_pixtral(example, image_before_text=None):
     messages = []
@@ -178,31 +161,42 @@ def main(args):
             device_map="auto",
         )
 
-    dataset = dataset_eval(
-        json_path, img_fodler, normalized_focal_length = 750.0 # change to the corresponding value for other models
-    )
+    if args.run_deterministic_inference:
+        dataset = dataset_inference(
+            json_path,
+            img_fodler,
+            normalized_focal_length=750.0,  # change to the corresponding value for other models
+        )
+    else:
+        dataset = dataset_eval(
+            json_path,
+            img_fodler,
+            normalized_focal_length=750.0,  # change to the corresponding value for other models
+        )
 
-    print(f"dataset size = {len(dataset)}")
+    print(f"{dataset.__class__.__name__} size = {len(dataset)}")
 
     metric_funcs = [delta1_metric]
-
     metrics = []
     all_outputs = []  # List to store all answers
     all_solutions = []  # List to store all solutions
 
-    samples_to_eval = (
-        min(args.samples_to_eval, len(dataset)) // args.bsz
-    ) * args.bsz
+    samples_to_eval = min(args.samples_to_eval, len(dataset))
     step = 1
-    sampled_indices = list(range(0, len(dataset), step))[: samples_to_eval]
+    sampled_indices: list[int] = list(range(0, samples_to_eval, step))
+    print(f"Evaluating {len(sampled_indices)} samples")
 
     with torch.no_grad():
 
         for i in tqdm(range(0, len(sampled_indices), args.bsz)):
-            # for i in tqdm(range(args.bsz * 157, len(sampled_indices), args.bsz)):
-            batch_indices = sampled_indices[i : i + args.bsz]
-
-            batch_messages = [dataset[j] for j in batch_indices]
+            batch_indices: list[int] = sampled_indices[i : i + args.bsz]
+            batch_messages: list[dict[str, Any]] = []
+            for j in batch_indices:
+                message = dataset[j]
+                if message is not None:
+                    batch_messages.append(message)
+            if len(batch_messages) == 0:
+                continue
 
             if "pixtral" in model_path.lower():
                 chat = [
@@ -242,32 +236,27 @@ def main(args):
                 if args.apply_system_prompt:
                     text = [
                         processor.apply_chat_template(
-                            convert_example(msg, True)[
-                                "messages"
-                            ],
+                            convert_example(msg, True)["messages"],
                             tokenize=False,
                             add_generation_prompt=True,
                         )
                         for msg in batch_messages
                     ]
                 else:
-                    batch_messages_text = [
-                        dataset[j]["prompt"] for j in batch_indices
+                    batch_messages_text: list[str] = [
+                        msg["prompt"] for msg in batch_messages
                     ]
-                    text = [
+                    text: list[str] = [
                         processor.apply_chat_template(
                             msg, tokenize=False, add_generation_prompt=True
                         )
                         for msg in batch_messages_text
                     ]
 
-                    # image_inputs, video_inputs = process_vision_info(batch_messages)
-                # breakpoint()
                 image_inputs = [
-                    x["images"] if "images" in x else x["image"]
-                    for x in batch_messages
+                    x["images"] if "images" in x else x["image"] for x in batch_messages
                 ]
-                # print("image_inputs", image_inputs)
+
                 if i == 0:
                     print(
                         "text = ",
@@ -285,7 +274,6 @@ def main(args):
                 )
                 inputs = inputs.to("cuda")
 
-                # breakpoint()
                 # Inference: Generation of the output
                 # TODO maybe enable sampling here later
                 generated_ids = model.generate(
@@ -331,18 +319,25 @@ def main(args):
     for i in range(len(metric_funcs)):
         print("final delta_1 = ", sum(metrics[i]) / len(metrics[i]))
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="DepthLM parameters."
-    )
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    parser = argparse.ArgumentParser(description="DepthLM parameters.")
     parser.add_argument(
         "--model_path", type=str, required=True, help="Path to the model."
     )
     parser.add_argument(
-        "--image_folder", type=str, default = "./examples/ibims1/", help="folder that contains the image"
+        "--image_folder",
+        type=str,
+        default="./examples/ibims1/",
+        help="folder that contains the image",
     )
     parser.add_argument(
-        "--json_path", type=str, default = "./examples/ibims1/ibims1_val.jsonl", help="path to the meta data"
+        "--json_path",
+        type=str,
+        default="./examples/ibims1/ibims1_val.jsonl",
+        help="path to the meta data",
     )
     parser.add_argument(
         "--max_new_tokens",
@@ -350,8 +345,16 @@ if __name__ == "__main__":
         default=4096,
         help="maximum number of tokens to generate",
     )
+    parser.add_argument("--bsz", type=int, default=1, help="Batch size for processing.")
     parser.add_argument(
-        "--bsz", type=int, default=1, help="Batch size for processing."
+        "--apply_system_prompt",
+        action="store_true",
+        help="For Qwen only, whether to apply system prompt or not.",
+    )
+    parser.add_argument(
+        "--run_deterministic_inference",
+        action="store_true",
+        help="When True, will call the dataset_inference class to run deterministic inference.",
     )
     parser.add_argument(
         "--samples_to_eval",
