@@ -9,10 +9,13 @@ import json
 import logging
 import os
 import random
+from io import StringIO
 from typing import Any
 
 import cv2
 import numpy as np
+
+import pandas as pd
 
 from PIL import Image
 from torch.utils.data import Dataset
@@ -151,11 +154,11 @@ class dataset_eval(Dataset):
 
         print("reading data from ", data_path, "image_folder = ", image_folder)
         if ".jsonl" in data_path:
-            import pandas as pd
-
-            self.list_data_dict = pd.read_json(data_path, lines=True).to_dict(
-                orient="records"
-            )
+            with open(data_path, "r") as f:
+                json_content = f.read()
+            self.list_data_dict = pd.read_json(
+                StringIO(json_content), lines=True
+            ).to_dict(orient="records")
         else:
             self.list_data_dict = json.load(open(data_path, "r"))
 
@@ -347,12 +350,14 @@ class dataset_train(Dataset):
 
         for dp in data_paths:
             if ".jsonl" in dp:
-                import pandas as pd
-
                 print("reading jsonl from ", dp)
                 try:
+                    with open(dp, "r") as f:
+                        json_content = f.read()
                     self.list_data_dict.append(
-                        pd.read_json(dp, lines=True).to_dict(orient="records")
+                        pd.read_json(StringIO(json_content), lines=True).to_dict(
+                            orient="records"
+                        )
                     )
                 except Exception as e:
                     print(e)
@@ -680,11 +685,11 @@ class dataset_inference(Dataset):
 
         logger.info(f"reading data from {data_path=}, {image_folder=}")
         if ".jsonl" in data_path:
-            import pandas as pd
-
-            self.list_data_dict = pd.read_json(data_path, lines=True).to_dict(
-                orient="records"
-            )
+            with open(data_path, "r") as f:
+                json_content = f.read()
+            self.list_data_dict = pd.read_json(
+                StringIO(json_content), lines=True
+            ).to_dict(orient="records")
         else:
             self.list_data_dict = json.load(open(data_path, "r"))
 
