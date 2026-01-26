@@ -1,4 +1,4 @@
-# DepthLM
+# [ICLR2026] DepthLM
 Official implementation of "[DepthLM: Metric Depth from Vision Language Models](https://arxiv.org/abs/2509.25413)".
 
 
