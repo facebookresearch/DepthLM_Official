@@ -33,6 +33,8 @@ Zhipeng Cai, Meta Inc, homepage: https://zhipengcai.github.io/, email: czptc2h a
 | Model      |                                               Link                                                |
 |:----:|:-------------------------------------------------------------------------------------------------:|
 | DepthLM (Pixtral 12B)  |   [Download 🤗](https://huggingface.co/facebook/DepthLM) |
+| DepthLM (3B)  |   (Coming soon!) |
+| DepthLM (7B)  |   (Coming soon!) |
 
 ## Data Preparation
 - For each training/eval dataset, we curate them into
