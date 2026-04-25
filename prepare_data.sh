@@ -58,7 +58,10 @@ python -m iphone.prepare_depth_json iphone/configs/prepare_iphone_data.yml
 
 # Taskonomy
 ## 1. download the fullplus version of the dataset following https://github.com/StanfordVL/taskonomy/tree/master/data
-## 2. curate data (coming soon)
+python utils/curate_taskonomy.py \
+--dataroot /path/to/taskonomy \
+--out_json_path /path/to/output_jsonl/taskonomy.jsonl \
+--out_image_dir /path/to/output_image_folder
 
 # HM3d
 ## 1. download the hm3d dataset using https://docs.omnidata.vision/starter_dataset_download.html (set the components to hm3d)

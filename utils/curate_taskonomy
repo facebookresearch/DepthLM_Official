@@ -1,0 +1,123 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
+import os
+import shutil
+import json
+import argparse
+import numpy as np
+from glob import glob
+from PIL import Image
+
+def main():
+    parser = argparse.ArgumentParser(description="Process Taskonomy dataset.")
+    parser.add_argument("--dataroot", type=str, required=True, help="Path to Taskonomy fullplus root directory")
+    parser.add_argument("--out_json_path", type=str, required=True, help="Output JSONL path")
+    parser.add_argument("--out_image_dir", type=str, required=True, help="Output RGB image folder")
+    parser.add_argument("--points_per_image", type=int, default=3, help="Number of depth points to sample")
+    args = parser.parse_args()
+
+    dataroot = args.dataroot
+    out_json_path = args.out_json_path
+    out_image_path = args.out_image_dir
+    points_per_image = args.points_per_image
+
+    print(f"Scanning Taskonomy RGB files in {dataroot}...")
+    # Taskonomy standard naming is often something like <building_name>/rgb/<building_name>_..._rgb.png
+    rgb_files = glob(os.path.join(dataroot, "**", "*_rgb.png"), recursive=True)
+    if not rgb_files:
+        # Fallback case compressed
+        rgb_files = glob(os.path.join(dataroot, "**", "*_rgb.webp"), recursive=True)
+    
+    print(f"Found {len(rgb_files)} RGB files.")
+
+    if os.path.exists(out_image_path):
+        shutil.rmtree(out_image_path)
+    os.makedirs(out_image_path)
+
+    count = 0
+    with open(out_json_path, "w") as jsonl_file:
+        for image_path in rgb_files:
+            # Deduce depth path by replacing 'rgb' string identifier with 'depth_zbuffer'
+            depth_path = image_path.replace("rgb", "depth_zbuffer")
+            
+            if not os.path.exists(depth_path):
+                # Try finding depth_euclidean if zbuffer is missing
+                depth_path = image_path.replace("rgb", "depth_euclidean")
+                is_euclidean = True
+                if not os.path.exists(depth_path):
+                    continue
+            else:
+                is_euclidean = False
+
+            # Create output subdirectories
+            sub_dir = os.path.relpath(image_path, dataroot)
+            dest_image_path = os.path.join(out_image_path, sub_dir)
+            os.makedirs(os.path.dirname(dest_image_path), exist_ok=True)
+            shutil.copy(image_path, dest_image_path)
+
+            data_dict = {}
+            data_dict["image"] = sub_dir
+
+            pil_image = Image.open(image_path)
+            W, H = pil_image.size
+
+            # Taskonomy uses a 90 degree FOV camera
+            # fx = fy = W / (2 * tan(FOV / 2)) -> W / 2
+            fx = W / 2.0
+            fy = H / 2.0
+            cx = W / 2.0
+            cy = H / 2.0
+
+            data_dict["intrinsics"] = [fx, fy, cx, cy, W, H]
+
+            # Load 16-bit Depth
+            depth_img = Image.open(depth_path)
+            depth_arr = np.asarray(depth_img, dtype=np.float32)
+
+            # Taskonomy 16-bit depth is scaled. standard is pixel_value / 512.0 for meters
+            depth_arr = depth_arr / 512.0
+
+            # Filter valid depth pixels (0.01m to 120m)
+            valid_pixels = np.argwhere((depth_arr > 0.01) & (depth_arr < 120.0))
+            
+            if len(valid_pixels) < points_per_image:
+                # Skip images that don't have enough valid depth pixels
+                continue
+                
+            sampled_indices = np.random.choice(
+                len(valid_pixels), size=points_per_image, replace=False
+            )
+            sampled_pixels = valid_pixels[sampled_indices]
+
+            # [y, x] -> [x, y] to align with [u, v]
+            data_dict["pixel_coords"] = sampled_pixels[:, [1, 0]].tolist()
+
+            # Retrieve Z depth
+            z = depth_arr[sampled_pixels[:, 0], sampled_pixels[:, 1]]
+
+            if is_euclidean:
+                # If the dataset specifically provides depth_euclidean, no trigonometry needed
+                euclidean_distances = z
+            else:
+                # Calculate Euclidean distances from Z-buffer
+                x = (sampled_pixels[:, 1] - cx) * z / fx
+                y = (sampled_pixels[:, 0] - cy) * z / fy
+                euclidean_distances = np.sqrt(x**2 + y**2 + z**2)
+
+            data_dict["depth"] = euclidean_distances.tolist()
+
+            json.dump(data_dict, jsonl_file)
+            jsonl_file.write("\n")
+            count += 1
+            
+            if count % 1000 == 0:
+                print(f"Processed {count} valid images...")
+
+    print(f"Taskonomy curation complete! {count} total files written to {out_json_path}")
+
+if __name__ == "__main__":
+    main()
