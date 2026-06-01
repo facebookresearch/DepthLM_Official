@@ -72,6 +72,9 @@ Zhipeng Cai, Meta Inc, homepage: https://zhipengcai.github.io/, email: czptc2h a
 <img width=100% src="./media/point_cloud.png"/>
 </div>
 
+## Related project
+
+Our follow up project [VLM³](https://github.com/facebookresearch/VLM3) has been released! It extends the findings of DepthLM to diverse 3D vision tasks! 
 
 ## License
 DepthLM is FAIR CC-BY-NC licensed, as found in the LICENSE file.
